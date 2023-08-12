@@ -3,119 +3,94 @@
 # Function to unpack a single file
 unpack_file() {
   local file="$1"
-  
-  # Get the compression type of the file
-  local compression_type=$(file -b "$file" | awk '{print $1}')
-  
-  # Determine the appropriate decompression command based on the compression type
-  case $compression_type in
-    "gzip")
-      decompress_command="gunzip"
-      ;;
-    "bzip2")
-      decompress_command="bunzip2"
-      ;;
-    "Zip")
-      decompress_command="unzip -o"
-      ;;
-    "compress")
-      decompress_command="uncompress"
-      ;;
+  local result
+
+  case $(file -b "$file" | awk '{print $1}') in
+    gzip | compress)
+      gzip -d -q -f "$file" ;;
+    bzip2)
+      bunzip2 -q -f "$file" ;;
+    Zip)
+      unzip -q -o "$file" ;;
     *)
-      return 1 # File is not compressed, exit with failure
-      ;;
+      return 1 ;; # failure
   esac
-  
-  # Execute the decompression command and overwrite existing files
-  $decompress_command -f "$file"
-  
-  # Check the exit status of the decompression command
-  local exit_status=$?
-  if [ $exit_status -eq 0 ]; then
-    echo "Unpacked $file"
-  else
-    echo "Failed to unpack $file"
-    return 1
-  fi
+
+  result=$?
+  [ "$verbose" = true ] && echo "$([ $result -eq 0 ] && echo 'Unpacked' || echo 'Failed to unpack') $file..."
+  return $result
 }
 
 # Function to recursively unpack files in a directory
 unpack_directory() {
   local directory="$1"
-  
-  # Iterate over all files in the directory
+  local archives_decompressed=0
+  local files_not_decompressed=0
+
   for file in "$directory"/*; do
     if [ -d "$file" ]; then
-      # If the file is a directory, recursively unpack its contents
       unpack_directory "$file"
+    elif unpack_file "$file"; then
+      ((archives_decompressed++))
     else
-      # If the file is a regular file, unpack it
-      unpack_file "$file"
+      ((files_not_decompressed++))
     fi
   done
+
+  ((archives_decompressed_total+=archives_decompressed))
+  ((files_not_decompressed_total+=files_not_decompressed))
+}
+
+# Display the script's manual
+print_manual() {
+  echo "Usage: $0 [-r] [-v] file1 [file2 ...]"
+  echo "Unpacks compressed files."
+  echo
+  echo "Options:"
+  echo "  -r    Recursively unpack files in directories."
+  echo "  -v    Verbose mode. Print additional information."
+  echo
+  echo "Arguments:"
+  echo "  file1, file2, ...    The file(s) to unpack."
+  echo
+  echo "Note: Supported compressed file formats are gzip, compress, bzip2, and Zip."
 }
 
 # Main script logic
 recursive=false
 verbose=false
-files=()
+archives_decompressed_total=0
+files_not_decompressed_total=0
 
 # Parse command-line options
 while getopts "rv" opt; do
   case $opt in
-    r)
-      recursive=true
-      ;;
-    v)
-      verbose=true
-      ;;
-    *)
-      echo "Invalid option: -$OPTARG" >&2
-      exit 1
-      ;;
+    r) recursive=true ;;
+    v) verbose=true ;;
+    *) print_manual; exit 1 ;;
   esac
 done
 
-# Shift the option arguments to access the file arguments
 shift $((OPTIND - 1))
 
-# Store the remaining arguments as files
-files+=("$@")
+# Ensure at least one file is provided
+if [ $# -eq 0 ]; then
+  echo "Error: No file(s) provided."
+  print_manual
+  exit 1
+fi
 
-# Variable to keep track of the number of archives decompressed
-archives_decompressed=0
-
-# Variable to keep track of the number of files that were not decompressed
-files_not_decompressed=0
-
-# Iterate over each file
-for file in "${files[@]}"; do
-  if [ -d "$file" ]; then
-    # If the file is a directory and recursive option is enabled, unpack its contents
-    if [ "$recursive" = true ]; then
-      unpack_directory "$file"
-    else
-      echo "Ignoring directory: $file"
-      ((files_not_decompressed++))
-    fi
+# Process each file or directory
+for file in "$@"; do
+  if [ -d "$file" ] && [ "$recursive" = true ]; then
+    unpack_directory "$file"
+  elif unpack_file "$file"; then
+    ((archives_decompressed_total++))
   else
-    # If the file is a regular file, unpack it
-    if [ "$verbose" = true ]; then
-      echo "Unpacking $file..."
-    fi
-    unpack_file "$file"
-    
-    # Check the exit status of the unpack_file function
-    if [ $? -eq 0 ]; then
-      ((archives_decompressed++))
-    else
-      ((files_not_decompressed++))
-    fi
+    ((files_not_decompressed_total++))
   fi
 done
 
-# Print the number of archives decompressed
-echo "Decompressed $archives_decompressed archive(s)"
-
-# Return the number of files that were not decompressed
-exit $files_not_decompressed
+# Display results
+echo "Decompressed $archives_decompressed_total archive(s)"
+exit $files_not_decompressed_total
